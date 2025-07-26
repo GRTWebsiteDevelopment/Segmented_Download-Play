@@ -1533,21 +1533,22 @@ bufferToHexString(buffer) {
 }
 
 
-  /**
-   * Calculate average segment duration
-   * @intuition Estimate typical segment length for calculations
-   * @approach Average duration from first variant segments
-   * @complexity Time: O(n) where n is segments count, Space: O(1)
-   */
-  getAverageSegmentDuration() {
-    if (!this.manifest || !this.manifest.variants.length) return 10
-    
-    const firstVariant = this.manifest.variants[0]
-    if (!firstVariant.segments.length) return 10
-    
-    const totalDuration = firstVariant.segments.reduce((sum, seg) => sum + seg.duration, 0)
-    return totalDuration / firstVariant.segments.length
-  }
+/**
+ * Calculate average segment duration
+ * @intuition Estimate typical segment length for calculations
+ * @approach Average duration from first variant segments
+ * @complexity Time: O(n) where n is segments count, Space: O(1)
+ */
+getAverageSegmentDuration() {
+  if (!this.manifest?.variants?.length) return 10
+
+  const firstVariant = this.manifest.variants[0]
+  if (!firstVariant?.segments?.length) return 10
+  
+  const totalDuration = firstVariant.segments.reduce((sum, seg) => sum + (seg?.duration ?? 0), 0)
+  return totalDuration / firstVariant.segments.length
+}
+
 
   /**
    * Extract video codec from codecs string
@@ -1683,11 +1684,18 @@ calculateBufferHealth() {
   const targetBuffer = this.config.bufferSize
   const healthScore = Math.min(1.0, bufferAhead / targetBuffer)
   
+  const getHealthStatus = (score) => {
+    if (score > 0.8) return 'excellent'
+    if (score > 0.5) return 'good'
+    if (score > 0.2) return 'fair'
+    return 'poor'
+  }
+  
   return {
     score: healthScore,
     bufferAhead,
     targetBuffer,
-    status: healthScore > 0.8 ? 'excellent' : healthScore > 0.5 ? 'good' : healthScore > 0.2 ? 'fair' : 'poor'
+    status: getHealthStatus(healthScore)
   }
 }
 
@@ -1698,16 +1706,17 @@ calculateBufferHealth() {
  * @complexity Time: O(v) where v is variants count, Space: O(v)
  */
 getAvailableQualityLevels() {
-  if (!this.currentManifest || !this.currentManifest.variants) return []
+  if (!this.currentManifest?.variants?.length) return []
   
   return this.currentManifest.variants.map(variant => ({
-    id: variant.id || `${variant.bandwidth}`,
-    bandwidth: variant.bandwidth,
-    resolution: variant.resolution,
+    id: variant?.id || `${variant?.bandwidth}`,
+    bandwidth: variant?.bandwidth,
+    resolution: variant?.resolution,
     label: this.formatQualityLabel(variant),
-    active: variant.bandwidth === this.currentBitrate
+    active: variant?.bandwidth === this.currentBitrate
   }))
 }
+
 
 /**
  * Format quality label for display
@@ -1917,44 +1926,45 @@ class SegmentDownloader {
     this.bandwidthEstimator = bandwidthEstimator
   }
 
-  /**
-   * Download segment with failover and retry
-   * @intuition Robust download with multiple recovery strategies
-   * @approach Try each CDN with retries and exponential backoff
-   * @complexity Time: O(r*c) where r is retries and c is CDN count, Space: O(s) where s is segment size
-   */
-  async download(segment, cdnUrls) {
-    let lastError = null
-    
-    for (let cdnIndex = 0; cdnIndex < cdnUrls.length; cdnIndex++) {
-      for (let retry = 0; retry < this.config.maxRetries; retry++) {
-        try {
-          const startTime = Date.now()
-          const url = this.buildSegmentUrl(cdnUrls[cdnIndex], segment.url)
-          
-          const response = await axios.get(url, {
-            responseType: 'arraybuffer',
-            timeout: this.config.segmentTimeout,
-            headers: {
-              'Range': 'bytes=0-'
-            }
-          })
-          
-          const duration = Date.now() - startTime
-          this.bandwidthEstimator.addMeasurement(response.data.byteLength, duration)
-          
-          return response.data
-        } catch (error) {
-          lastError = error
-          if (retry < this.config.maxRetries - 1) {
-            await this.delay(Math.pow(2, retry) * 1000)
+/**
+ * Download segment with failover and retry
+ * @intuition Robust download with multiple recovery strategies
+ * @approach Try each CDN with retries and exponential backoff
+ * @complexity Time: O(r*c) where r is retries and c is CDN count, Space: O(s) where s is segment size
+ */
+async download(segment, cdnUrls) {
+  let lastError = null
+  
+  for (const cdnUrl of cdnUrls) {
+    for (let retry = 0; retry < this.config.maxRetries; retry++) {
+      try {
+        const startTime = Date.now()
+        const url = this.buildSegmentUrl(cdnUrl, segment.url)
+        
+        const response = await axios.get(url, {
+          responseType: 'arraybuffer',
+          timeout: this.config.segmentTimeout,
+          headers: {
+            'Range': 'bytes=0-'
           }
+        })
+        
+        const duration = Date.now() - startTime
+        this.bandwidthEstimator.addMeasurement(response.data.byteLength, duration)
+        
+        return response.data
+      } catch (error) {
+        lastError = error
+        if (retry < this.config.maxRetries - 1) {
+          await this.delay(Math.pow(2, retry) * 1000)
         }
       }
     }
-    
-    throw lastError
   }
+  
+  throw lastError
+}
+
 
   /**
    * Build complete segment URL from base and path
@@ -2034,18 +2044,16 @@ class AdaptiveBitrateController {
     })
   }
 
-  /**
-   * Estimate available bandwidth
-   * @intuition Get network capacity estimate
-   * @approach Use Navigator Connection API or fallback
-   * @complexity Time: O(1), Space: O(1)
-   */
-  estimateAvailableBandwidth() {
-    if (navigator.connection && navigator.connection.downlink) {
-      return navigator.connection.downlink * 1000000
-    }
-    return 5000000 // Default 5 Mbps
-  }
+/**
+ * Estimate available bandwidth
+ * @intuition Get network capacity estimate
+ * @approach Use Navigator Connection API or fallback
+ * @complexity Time: O(1), Space: O(1)
+ */
+estimateAvailableBandwidth() {
+  return (navigator.connection?.downlink ?? 5) * 1000000
+}
+
 }
 
 export { BandwidthEstimator, SegmentDownloader, AdaptiveBitrateController }
