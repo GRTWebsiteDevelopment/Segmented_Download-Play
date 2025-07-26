@@ -154,7 +154,7 @@ parseManifest(data, baseUrl) {
 /**
  * Parse HLS manifest format
  * @intuition Extract variants, tracks, and segments from HLS
- * @approach Line-by-line parsing with extracted helper functions
+ * @approach Line-by-line parsing with state machine
  * @complexity Time: O(n) where n is manifest lines, Space: O(m) where m is variants count
  */
 parseHLSManifest(manifestData, baseUrl) {
@@ -168,143 +168,89 @@ parseHLSManifest(manifestData, baseUrl) {
     baseUrl
   }
   
-  const parsingState = {
-    currentVariant: null,
-    currentTrack: null,
-    segmentIndex: 0
-  }
+  let currentVariant = null
+  let currentTrack = null
+  let segmentIndex = 0
   
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim()
-    const nextLine = lines[i + 1]?.trim()
     
-    i = this.processHLSLine(line, nextLine, manifest, parsingState, baseUrl, i)
+    if (line.startsWith('#EXT-X-STREAM-INF:')) {
+      const bandwidth = parseInt(line.match(/BANDWIDTH=(\d+)/)?.[1] || '0')
+      const resolution = line.match(/RESOLUTION=(\d+x\d+)/)?.[1]
+      const codecs = line.match(/CODECS="([^"]+)"/)?.[1] || ''
+      const audio = line.match(/AUDIO="([^"]+)"/)?.[1]
+      const subtitles = line.match(/SUBTITLES="([^"]+)"/)?.[1]
+      
+      currentVariant = {
+        id: `variant_${manifest.variants.length}`,
+        bandwidth,
+        resolution,
+        codecs,
+        audio,
+        subtitles,
+        segments: [],
+        url: null
+      }
+    } else if (line.startsWith('#EXT-X-MEDIA:')) {
+      const type = line.match(/TYPE=(\w+)/)?.[1]
+      const groupId = line.match(/GROUP-ID="([^"]+)"/)?.[1]
+      const name = line.match(/NAME="([^"]+)"/)?.[1]
+      const language = line.match(/LANGUAGE="([^"]+)"/)?.[1]
+      const uri = line.match(/URI="([^"]+)"/)?.[1]
+      const autoselect = line.includes('AUTOSELECT=YES')
+      const defaultTrack = line.includes('DEFAULT=YES')
+      
+      currentTrack = {
+        id: `${type.toLowerCase()}_${groupId}_${manifest.audioTracks.length + manifest.subtitleTracks.length}`,
+        type: type.toLowerCase(),
+        groupId,
+        name,
+        language,
+        uri: uri ? this.resolveUrl(uri, baseUrl) : null,
+        autoselect,
+        default: defaultTrack,
+        segments: [],
+        codec: this.extractCodecForTrackType(type, codecs)
+      }
+      
+      if (type === 'AUDIO') {
+        manifest.audioTracks.push(currentTrack)
+      } else if (type === 'SUBTITLES') {
+        manifest.subtitleTracks.push(currentTrack)
+      }
+    } else if (line.startsWith('#EXTINF:')) {
+      const duration = parseFloat(line.match(/#EXTINF:([\d.]+)/)?.[1] || '0')
+      const nextLine = lines[i + 1]?.trim()
+      
+      if (nextLine && !nextLine.startsWith('#')) {
+        const segment = {
+          index: segmentIndex++,
+          duration,
+          url: this.resolveUrl(nextLine, baseUrl),
+          checksum: null
+        }
+        
+        if (currentVariant) currentVariant.segments.push(segment)
+        if (currentTrack) currentTrack.segments.push(segment)
+      }
+    } else if (!line.startsWith('#') && currentVariant && !currentVariant.url) {
+      currentVariant.url = this.resolveUrl(line, baseUrl)
+      manifest.variants.push(currentVariant)
+      currentVariant = null
+    }
   }
   
-  this.finalizeManifest(manifest, parsingState)
+  // Add current variant if exists
+  if (currentVariant) {
+    manifest.variants.push(currentVariant)
+  }
+  
+  // Sort variants by bandwidth
+  manifest.variants.sort((a, b) => a.bandwidth - b.bandwidth)
+  
   return manifest
 }
-
-processHLSLine(line, nextLine, manifest, state, baseUrl, currentIndex) {
-  if (line.startsWith('#EXT-X-STREAM-INF:')) {
-    state.currentVariant = this.parseStreamInf(line, manifest.variants.length)
-  } else if (line.startsWith('#EXT-X-MEDIA:')) {
-    this.parseMediaTag(line, manifest, state)
-  } else if (line.startsWith('#EXTINF:')) {
-    return this.parseExtInf(line, nextLine, state, baseUrl, currentIndex)
-  } else if (this.isVariantUrl(line, state.currentVariant)) {
-    this.addVariantToManifest(line, manifest, state, baseUrl)
-  }
-  
-  return currentIndex
-}
-
-parseStreamInf(line, variantCount) {
-  const bandwidth = this.extractAttribute(line, /BANDWIDTH=(\d+)/, parseInt) || 0
-  const resolution = this.extractAttribute(line, /RESOLUTION=(\d+x\d+)/)
-  const codecs = this.extractAttribute(line, /CODECS="([^"]+)"/) || ''
-  const audio = this.extractAttribute(line, /AUDIO="([^"]+)"/)
-  const subtitles = this.extractAttribute(line, /SUBTITLES="([^"]+)"/)
-  
-  return {
-    id: `variant_${variantCount}`,
-    bandwidth,
-    resolution,
-    codecs,
-    audio,
-    subtitles,
-    segments: [],
-    url: null
-  }
-}
-
-parseMediaTag(line, manifest, state) {
-  const type = this.extractAttribute(line, /TYPE=(\w+)/)
-  const groupId = this.extractAttribute(line, /GROUP-ID="([^"]+)"/)
-  const name = this.extractAttribute(line, /NAME="([^"]+)"/)
-  const language = this.extractAttribute(line, /LANGUAGE="([^"]+)"/)
-  const uri = this.extractAttribute(line, /URI="([^"]+)"/)
-  
-  const track = {
-    id: `${type.toLowerCase()}_${groupId}_${manifest.audioTracks.length + manifest.subtitleTracks.length}`,
-    type: type.toLowerCase(),
-    groupId,
-    name,
-    language,
-    uri: uri ? this.resolveUrl(uri, manifest.baseUrl) : null,
-    autoselect: line.includes('AUTOSELECT=YES'),
-    default: line.includes('DEFAULT=YES'),
-    segments: [],
-    codec: this.extractCodecForTrackType(type, '')
-  }
-  
-  this.addTrackToManifest(track, manifest)
-  state.currentTrack = track
-}
-
-parseExtInf(line, nextLine, state, baseUrl, currentIndex) {
-  const duration = this.extractAttribute(line, /#EXTINF:([\d.]+)/, parseFloat) || 0
-  
-  if (this.isValidSegmentUrl(nextLine)) {
-    const segment = {
-      index: state.segmentIndex++,
-      duration,
-      url: this.resolveUrl(nextLine, baseUrl),
-      checksum: null
-    }
-    
-    this.addSegmentToCurrentStreams(segment, state)
-    return currentIndex + 1 // Skip next line as it's the URL
-  }
-  
-  return currentIndex
-}
-
-// Helper methods to reduce complexity
-extractAttribute(line, regex, converter = String) {
-  const match = line.match(regex)
-  return match ? converter(match[1]) : null
-}
-
-isVariantUrl(line, currentVariant) {
-  return !line.startsWith('#') && currentVariant && !currentVariant.url
-}
-
-isValidSegmentUrl(line) {
-  return line && !line.startsWith('#')
-}
-
-addVariantToManifest(line, manifest, state, baseUrl) {
-  state.currentVariant.url = this.resolveUrl(line, baseUrl)
-  manifest.variants.push(state.currentVariant)
-  state.currentVariant = null
-}
-
-addTrackToManifest(track, manifest) {
-  if (track.type === 'audio') {
-    manifest.audioTracks.push(track)
-  } else if (track.type === 'subtitles') {
-    manifest.subtitleTracks.push(track)
-  }
-}
-
-addSegmentToCurrentStreams(segment, state) {
-  if (state.currentVariant) {
-    state.currentVariant.segments.push(segment)
-  }
-  if (state.currentTrack) {
-    state.currentTrack.segments.push(segment)
-  }
-}
-
-finalizeManifest(manifest, state) {
-  if (state.currentVariant) {
-    manifest.variants.push(state.currentVariant)
-  }
-  
-  manifest.variants.sort((a, b) => a.bandwidth - b.bandwidth)
-}
-
 
 /**
  * Parse DASH manifest format (basic implementation)
