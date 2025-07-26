@@ -154,7 +154,7 @@ parseManifest(data, baseUrl) {
 /**
  * Parse HLS manifest format
  * @intuition Extract variants, tracks, and segments from HLS
- * @approach Line-by-line parsing with state machine
+ * @approach Line-by-line parsing with state machine using extracted methods
  * @complexity Time: O(n) where n is manifest lines, Space: O(m) where m is variants count
  */
 parseHLSManifest(manifestData, baseUrl) {
@@ -168,89 +168,117 @@ parseHLSManifest(manifestData, baseUrl) {
     baseUrl
   }
   
-  let currentVariant = null
-  let currentTrack = null
-  let segmentIndex = 0
+  const state = {
+    currentVariant: null,
+    currentTrack: null,
+    segmentIndex: 0
+  }
   
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim()
+    const nextLine = lines[i + 1]?.trim()
     
-    if (line.startsWith('#EXT-X-STREAM-INF:')) {
-      const bandwidth = parseInt(line.match(/BANDWIDTH=(\d+)/)?.[1] || '0')
-      const resolution = line.match(/RESOLUTION=(\d+x\d+)/)?.[1]
-      const codecs = line.match(/CODECS="([^"]+)"/)?.[1] || ''
-      const audio = line.match(/AUDIO="([^"]+)"/)?.[1]
-      const subtitles = line.match(/SUBTITLES="([^"]+)"/)?.[1]
-      
-      currentVariant = {
-        id: `variant_${manifest.variants.length}`,
-        bandwidth,
-        resolution,
-        codecs,
-        audio,
-        subtitles,
-        segments: [],
-        url: null
-      }
-    } else if (line.startsWith('#EXT-X-MEDIA:')) {
-      const type = line.match(/TYPE=(\w+)/)?.[1]
-      const groupId = line.match(/GROUP-ID="([^"]+)"/)?.[1]
-      const name = line.match(/NAME="([^"]+)"/)?.[1]
-      const language = line.match(/LANGUAGE="([^"]+)"/)?.[1]
-      const uri = line.match(/URI="([^"]+)"/)?.[1]
-      const autoselect = line.includes('AUTOSELECT=YES')
-      const defaultTrack = line.includes('DEFAULT=YES')
-      
-      currentTrack = {
-        id: `${type.toLowerCase()}_${groupId}_${manifest.audioTracks.length + manifest.subtitleTracks.length}`,
-        type: type.toLowerCase(),
-        groupId,
-        name,
-        language,
-        uri: uri ? this.resolveUrl(uri, baseUrl) : null,
-        autoselect,
-        default: defaultTrack,
-        segments: [],
-        codec: this.extractCodecForTrackType(type, codecs)
-      }
-      
-      if (type === 'AUDIO') {
-        manifest.audioTracks.push(currentTrack)
-      } else if (type === 'SUBTITLES') {
-        manifest.subtitleTracks.push(currentTrack)
-      }
-    } else if (line.startsWith('#EXTINF:')) {
-      const duration = parseFloat(line.match(/#EXTINF:([\d.]+)/)?.[1] || '0')
-      const nextLine = lines[i + 1]?.trim()
-      
-      if (nextLine && !nextLine.startsWith('#')) {
-        const segment = {
-          index: segmentIndex++,
-          duration,
-          url: this.resolveUrl(nextLine, baseUrl),
-          checksum: null
-        }
-        
-        if (currentVariant) currentVariant.segments.push(segment)
-        if (currentTrack) currentTrack.segments.push(segment)
-      }
-    } else if (!line.startsWith('#') && currentVariant && !currentVariant.url) {
-      currentVariant.url = this.resolveUrl(line, baseUrl)
-      manifest.variants.push(currentVariant)
-      currentVariant = null
-    }
+    this.parseManifestLine(line, nextLine, manifest, state, baseUrl)
   }
   
-  // Add current variant if exists
-  if (currentVariant) {
-    manifest.variants.push(currentVariant)
-  }
-  
-  // Sort variants by bandwidth
-  manifest.variants.sort((a, b) => a.bandwidth - b.bandwidth)
-  
+  this.finalizeManifest(manifest, state)
   return manifest
 }
+
+parseManifestLine(line, nextLine, manifest, state, baseUrl) {
+  if (line.startsWith('#EXT-X-STREAM-INF:')) {
+    state.currentVariant = this.parseStreamInfo(line, manifest.variants.length)
+  } else if (line.startsWith('#EXT-X-MEDIA:')) {
+    state.currentTrack = this.parseMediaInfo(line, manifest, baseUrl)
+  } else if (line.startsWith('#EXTINF:')) {
+    this.parseSegmentInfo(line, nextLine, state, baseUrl)
+  } else if (!line.startsWith('#') && state.currentVariant?.url === null) {
+    this.handleVariantUrl(line, manifest, state, baseUrl)
+  }
+}
+
+parseStreamInfo(line, variantCount) {
+  const bandwidth = parseInt(line.match(/BANDWIDTH=(\d+)/)?.[1] || '0')
+  const resolution = line.match(/RESOLUTION=(\d+x\d+)/)?.[1]
+  const codecs = line.match(/CODECS="([^"]+)"/)?.[1] || ''
+  const audio = line.match(/AUDIO="([^"]+)"/)?.[1]
+  const subtitles = line.match(/SUBTITLES="([^"]+)"/)?.[1]
+  
+  return {
+    id: `variant_${variantCount}`,
+    bandwidth,
+    resolution,
+    codecs,
+    audio,
+    subtitles,
+    segments: [],
+    url: null
+  }
+}
+
+parseMediaInfo(line, manifest, baseUrl) {
+  const type = line.match(/TYPE=(\w+)/)?.[1]
+  const groupId = line.match(/GROUP-ID="([^"]+)"/)?.[1]
+  const name = line.match(/NAME="([^"]+)"/)?.[1]
+  const language = line.match(/LANGUAGE="([^"]+)"/)?.[1]
+  const uri = line.match(/URI="([^"]+)"/)?.[1]
+  const autoselect = line.includes('AUTOSELECT=YES')
+  const defaultTrack = line.includes('DEFAULT=YES')
+  
+  const track = {
+    id: `${type.toLowerCase()}_${groupId}_${manifest.audioTracks.length + manifest.subtitleTracks.length}`,
+    type: type.toLowerCase(),
+    groupId,
+    name,
+    language,
+    uri: uri ? this.resolveUrl(uri, baseUrl) : null,
+    autoselect,
+    default: defaultTrack,
+    segments: [],
+    codec: this.extractCodecForTrackType(type, '')
+  }
+  
+  this.addTrackToManifest(track, manifest)
+  return track
+}
+
+addTrackToManifest(track, manifest) {
+  if (track.type === 'audio') {
+    manifest.audioTracks.push(track)
+  } else if (track.type === 'subtitles') {
+    manifest.subtitleTracks.push(track)
+  }
+}
+
+parseSegmentInfo(line, nextLine, state, baseUrl) {
+  if (!nextLine || nextLine.startsWith('#')) return
+  
+  const duration = parseFloat(line.match(/#EXTINF:([\d.]+)/)?.[1] || '0')
+  const segment = {
+    index: state.segmentIndex++,
+    duration,
+    url: this.resolveUrl(nextLine, baseUrl),
+    checksum: null
+  }
+  
+  if (state.currentVariant) state.currentVariant.segments.push(segment)
+  if (state.currentTrack) state.currentTrack.segments.push(segment)
+}
+
+handleVariantUrl(line, manifest, state, baseUrl) {
+  state.currentVariant.url = this.resolveUrl(line, baseUrl)
+  manifest.variants.push(state.currentVariant)
+  state.currentVariant = null
+}
+
+finalizeManifest(manifest, state) {
+  if (state.currentVariant) {
+    manifest.variants.push(state.currentVariant)
+  }
+  
+  manifest.variants.sort((a, b) => a.bandwidth - b.bandwidth)
+}
+
 
 /**
  * Parse DASH manifest format (basic implementation)
@@ -989,79 +1017,84 @@ extractCodecForTrackType(trackType, codecs) {
     return Math.max(0.1, quality)
   }
 
-  /**
-   * Setup adaptive bitrate switching
-   * @intuition Automatically adjust quality based on conditions
-   * @approach Monitor network and buffer states for optimal bitrate
-   * @complexity Time: O(1) per event, Space: O(1)
-   */
-  setupAdaptiveBitrate() {
-    // Add null check for manifest
-    if (!this.manifest || !this.manifest.variants) {
-      console.warn('Manifest not loaded, skipping adaptive bitrate setup')
-      return
-    }
-    
-    this.adaptiveBitrateSubscription = this.adaptiveBitrateController
-      .getOptimalBitrate$(this.manifest.variants, this.playbackState$)
-      .pipe(
-        distinctUntilChanged(),
-        filter(bitrate => bitrate !== this.currentBitrate),
-        filter(() => this.adaptiveBitrateEnabled), // Respect manual override
-        takeUntil(this.destroy$)
-      )
-      .subscribe({
-        next: (bitrate) => this.switchBitrate(bitrate),
-        error: (error) => this.errorEvents$.next({ type: 'adaptive_bitrate', error })
-      })
+/**
+ * Setup adaptive bitrate switching
+ * @intuition Automatically adjust quality based on conditions
+ * @approach Monitor network and buffer states for optimal bitrate
+ * @complexity Time: O(1) per event, Space: O(1)
+ */
+setupAdaptiveBitrate() {
+  // Use optional chaining for manifest check
+  if (!this.manifest?.variants?.length) {
+    console.warn('Manifest not loaded, skipping adaptive bitrate setup')
+    return
   }
+  
+  this.adaptiveBitrateSubscription = this.adaptiveBitrateController
+    .getOptimalBitrate$(this.manifest.variants, this.playbackState$)
+    .pipe(
+      distinctUntilChanged(),
+      filter(bitrate => bitrate !== this.currentBitrate),
+      filter(() => this.adaptiveBitrateEnabled), // Respect manual override
+      takeUntil(this.destroy$)
+    )
+    .subscribe({
+      next: (bitrate) => this.switchBitrate(bitrate),
+      error: (error) => this.errorEvents$.next({ type: 'adaptive_bitrate', error })
+    })
+}
 
-  /**
-   * Switch to new bitrate variant
-   * @intuition Change quality level while maintaining playback
-   * @approach Preload segments from new variant for seamless transition
-   * @complexity Time: O(k) where k is preload segments, Space: O(k)
-   */
-  async switchBitrate(newBitrate) {
-    const oldBitrate = this.currentBitrate
-    this.currentBitrate = newBitrate
-    
-    const newVariant = this.manifest.variants.find(v => v.bandwidth === newBitrate)
-    if (!newVariant) return
-    
-    try {
-      await this.seamlessBitrateSwitch(newVariant, oldBitrate)
-    } catch (error) {
-      this.currentBitrate = oldBitrate
-      this.errorEvents$.next({ type: 'bitrate_switch', error })
-    }
+/**
+ * Switch to new bitrate variant
+ * @intuition Change quality level while maintaining playback
+ * @approach Preload segments from new variant for seamless transition
+ * @complexity Time: O(k) where k is preload segments, Space: O(k)
+ */
+async switchBitrate(newBitrate) {
+  const oldBitrate = this.currentBitrate
+  this.currentBitrate = newBitrate
+  
+  const newVariant = this.manifest?.variants?.find(v => v.bandwidth === newBitrate)
+  if (!newVariant) return
+  
+  try {
+    await this.seamlessBitrateSwitch(newVariant, oldBitrate)
+  } catch (error) {
+    this.currentBitrate = oldBitrate
+    this.errorEvents$.next({ type: 'bitrate_switch', error })
   }
+}
 
-  /**
-   * Perform seamless bitrate switching
-   * @intuition Switch quality without playback interruption
-   * @approach Preload upcoming segments from new variant
-   * @complexity Time: O(k) where k is preload count, Space: O(k)
-   */
-  async seamlessBitrateSwitch(newVariant, oldBitrate) {
-    const currentTime = this.videoElement.currentTime
-    const segmentDuration = this.getAverageSegmentDuration()
-    const nextSegmentIndex = Math.ceil(currentTime / segmentDuration)
-    
-    const preloadPromises = []
-    for (let i = 0; i < 3 && nextSegmentIndex + i < newVariant.segments.length; i++) {
+/**
+ * Perform seamless bitrate switching
+ * @intuition Switch quality without playback interruption
+ * @approach Preload upcoming segments from new variant
+ * @complexity Time: O(k) where k is preload count, Space: O(k)
+ */
+async seamlessBitrateSwitch(newVariant, oldBitrate) {
+  const currentTime = this.videoElement?.currentTime ?? 0
+  const segmentDuration = this.getAverageSegmentDuration()
+  const nextSegmentIndex = Math.ceil(currentTime / segmentDuration)
+  
+  const preloadPromises = []
+  const segmentCount = newVariant?.segments?.length ?? 0
+  
+  for (let i = 0; i < 3 && nextSegmentIndex + i < segmentCount; i++) {
+    const segment = newVariant?.segments?.[nextSegmentIndex + i]
+    if (segment) {
       preloadPromises.push(
         this.downloadAndAppendSegment(
-          newVariant.segments[nextSegmentIndex + i], 
+          segment, 
           'video', 
           nextSegmentIndex + i, 
           newVariant.bandwidth
         )
       )
     }
-    
-    await Promise.all(preloadPromises)
   }
+  
+  await Promise.all(preloadPromises)
+}
 
 /**
  * Switch to different audio track with buffer management
@@ -1070,42 +1103,47 @@ extractCodecForTrackType(trackType, codecs) {
  * @complexity Time: O(k) where k is buffer refill segments, Space: O(k)
  */
 async switchAudioTrack(trackId) {
-  if (!this.availableTracks.has('audio')) return false
+  if (!this.availableTracks?.has?.('audio')) return false
   
   const audioTracks = this.availableTracks.get('audio')
-  const targetTrack = audioTracks.find(track => track.id === trackId)
+  const targetTrack = audioTracks?.find?.(track => track.id === trackId)
   
   if (!targetTrack) throw new Error(`Audio track ${trackId} not found`)
   
   // Don't switch if already active
-  if (this.activeTracks.get('audio') === trackId) return true
+  if (this.activeTracks?.get?.('audio') === trackId) return true
   
   try {
     // Remove current audio source buffer
-    if (this.sourceBuffers.has('audio')) {
+    if (this.sourceBuffers?.has?.('audio')) {
       const audioBuffer = this.sourceBuffers.get('audio')
       await this.waitForBufferReady(audioBuffer)
-      this.mediaSource.removeSourceBuffer(audioBuffer)
+      this.mediaSource?.removeSourceBuffer?.(audioBuffer)
     }
     
     // Create new source buffer for target audio track
-    const audioBuffer = this.mediaSource.addSourceBuffer(targetTrack.codec)
-    this.sourceBuffers.set('audio', audioBuffer)
-    this.activeTracks.set('audio', trackId)
+    const audioBuffer = this.mediaSource?.addSourceBuffer?.(targetTrack.codec)
+    if (!audioBuffer) {
+      throw new Error('Failed to create audio source buffer')
+    }
+    
+    this.sourceBuffers?.set?.('audio', audioBuffer)
+    this.activeTracks?.set?.('audio', trackId)
     
     // Setup buffer event handlers
-    audioBuffer.addEventListener('updateend', () => this.onSourceBufferUpdate('audio'))
-    audioBuffer.addEventListener('error', (error) => this.errorEvents$.next({ type: 'sourcebuffer', error }))
+    audioBuffer.addEventListener?.('updateend', () => this.onSourceBufferUpdate('audio'))
+    audioBuffer.addEventListener?.('error', (error) => this.errorEvents$?.next?.({ type: 'sourcebuffer', error }))
     
     // Re-download current segments for new audio track
     await this.refillBufferForTrackSwitch('audio', targetTrack)
     
     return true
   } catch (error) {
-    this.errorEvents$.next({ type: 'audio_track_switch', error })
+    this.errorEvents$?.next?.({ type: 'audio_track_switch', error })
     throw error
   }
 }
+
 
 /**
  * Enhanced subtitle track switching with WebVTT support
@@ -1217,9 +1255,9 @@ async loadSubtitleTrack(track) {
  */
 hideSubtitles() {
   const textTracks = this.videoElement.textTracks
-  for (let i = 0; i < textTracks.length; i++) {
-    textTracks[i].mode = 'hidden'
-  }
+  for (const textTrack of textTracks) {
+  textTrack.mode = 'hidden'
+}
 }
 
 /**
@@ -1234,12 +1272,20 @@ clearExistingTextTracks() {
     try {
       this.videoElement.removeChild(textTracks[0])
     } catch (error) {
+      // Properly handle the exception
+      this.errorEvents$?.next?.({ 
+        type: 'text_track_removal', 
+        error,
+        fallback: 'hiding_tracks'
+      })
+      
       // Text tracks can't be removed in some browsers, just hide them
       textTracks[0].mode = 'hidden'
       break
     }
   }
 }
+
 
 /**
  * Parse SRT subtitle format
@@ -1446,31 +1492,46 @@ parseASSTime(timeStr) {
     }
   }
 
-  /**
-   * Validate segment integrity using checksum
-   * @intuition Ensure segment data integrity
-   * @approach Calculate SHA-256 hash and compare with expected
-   * @complexity Time: O(s) where s is segment size, Space: O(1)
-   */
-  validateSegmentChecksum(data, expectedChecksum) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => {
-        const arrayBuffer = reader.result
-        crypto.subtle.digest('SHA-256', arrayBuffer).then(hashBuffer => {
-          const hashArray = Array.from(new Uint8Array(hashBuffer))
-          const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
-          
-          if (hashHex === expectedChecksum) {
-            resolve()
-          } else {
-            reject(new Error('Segment checksum validation failed'))
-          }
-        })
-      }
-      reader.readAsArrayBuffer(new Blob([data]))
-    })
+/**
+ * Validate segment integrity using checksum
+ * @intuition Ensure segment data integrity
+ * @approach Calculate SHA-256 hash and compare with expected
+ * @complexity Time: O(s) where s is segment size, Space: O(1)
+ */
+async validateSegmentChecksum(data, expectedChecksum) {
+  const arrayBuffer = await this.readAsArrayBuffer(data)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer)
+  const calculatedChecksum = this.bufferToHexString(hashBuffer)
+  
+  if (calculatedChecksum !== expectedChecksum) {
+    throw new Error('Segment checksum validation failed')
   }
+}
+
+/**
+ * Read data as ArrayBuffer
+ * @param {*} data - Data to read
+ * @returns {Promise<ArrayBuffer>} ArrayBuffer promise
+ */
+readAsArrayBuffer(data) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = reject
+    reader.readAsArrayBuffer(new Blob([data]))
+  })
+}
+
+/**
+ * Convert buffer to hex string
+ * @param {ArrayBuffer} buffer - Buffer to convert
+ * @returns {string} Hex string representation
+ */
+bufferToHexString(buffer) {
+  const hashArray = Array.from(new Uint8Array(buffer))
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
 
   /**
    * Calculate average segment duration
