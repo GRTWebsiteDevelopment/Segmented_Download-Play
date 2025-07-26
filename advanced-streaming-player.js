@@ -1,5 +1,5 @@
-import { fromEvent, Subject, BehaviorSubject, merge, interval, of, EMPTY, from } from 'rxjs'
-import { map, filter, switchMap, retry, catchError, debounceTime, distinctUntilChanged, shareReplay, takeUntil, bufferTime, mergeMap, concatMap } from 'rxjs/operators'
+import { fromEvent, Subject, BehaviorSubject, merge, interval, of, from } from 'rxjs'
+import { map, filter, switchMap, debounceTime, distinctUntilChanged, takeUntil} from 'rxjs/operators'
 import axios from 'axios'
 
 /**
@@ -454,7 +454,6 @@ extractCodecForTrackType(trackType, codecs) {
    * @complexity Time: O(n) where n is variants count, Space: O(1)
    */
   selectInitialBitrate() {
-    const networkQuality = this.networkQuality$.value
     const targetBandwidth = this.estimateAvailableBandwidth() * this.config.adaptiveBitrateThreshold
     
     return this.manifest.variants
